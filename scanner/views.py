@@ -12,41 +12,47 @@ from git import Repo
 @api_view(['POST'])
 def add_project(request):
     try:
-        
         data = request.data
         repo_url = data.get('github') or data.get('repo_url')
 
         if not repo_url:
             return JsonResponse({"error": "GitHub repo URL is required"}, status=400)
 
-        
+        # Create temporary directory for cloning
         temp_dir = tempfile.mkdtemp()
 
         try:
-            
+            # Clone the repo
             Repo.clone_from(repo_url, temp_dir)
 
-            
+            # Define report path
             report_path = os.path.join(temp_dir, "gitleaks-report.json")
-            docker_cmd = (
-                f"docker run --rm -v {temp_dir}:/scan zricethezav/gitleaks:latest "
-                f"detect --source /scan --report-format json --report-path /scan/gitleaks-report.json --no-git --verbose"
-            )
 
-            
-            result = subprocess.run(docker_cmd, shell=True, capture_output=True, text=True)
+            # Run Gitleaks binary (NOT Docker)
+            gitleaks_cmd = [
+                "gitleaks",
+                "detect",
+                "--source", temp_dir,
+                "--report-format", "json",
+                "--report-path", report_path
+            ]
 
-            
-            if result.returncode not in [0, 1]:  
+            result = subprocess.run(gitleaks_cmd, capture_output=True, text=True)
+
+            # Gitleaks returns 1 if leaks found, 0 if none
+            if result.returncode not in [0, 1]:
                 return JsonResponse({
                     "error": "Gitleaks execution failed",
                     "details": result.stderr or result.stdout
                 }, status=500)
 
-            
+            # Read the report
             if os.path.exists(report_path):
                 with open(report_path, 'r') as f:
-                    leaks = json.load(f)
+                    try:
+                        leaks = json.load(f)
+                    except json.JSONDecodeError:
+                        leaks = []
             else:
                 leaks = []
 
@@ -58,7 +64,7 @@ def add_project(request):
             }, status=200)
 
         finally:
-            
+            # Cleanup
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             except Exception as e:
